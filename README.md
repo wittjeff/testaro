@@ -163,6 +163,16 @@ Here is a sample job, showing properties that you can set:
                  // Chromium-specific). Defaults to true. Set false to opt
                  // out — useful for sites whose anti-bot heuristics react
                  // badly to stealth's patches.
+  extensions: [ // Optional. Absolute paths of directories of unpacked browser
+    '/home/user/exts/highContrastifier' // extensions to be loaded into the
+  ],             // browser, e.g. to test how an extension affects the
+                 // accessibility of pages. Only Chromium can load extensions,
+                 // so, if any are specified, browserID must be 'chromium'.
+                 // When extensions are specified, the browser is launched as
+                 // a persistent context with a temporary profile, and a
+                 // headless launch uses the full Chromium browser in its new
+                 // headless mode, because the default headless shell cannot
+                 // load extensions.
   creationTimeStamp: '241229T0537', // When job was created
   executionTimeStamp: '250110T1200', // When job will be ready to be performed
   target: {

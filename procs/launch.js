@@ -17,6 +17,8 @@
 // IMPORTS
 
 const {addError} = require('./error');
+const fs = require('fs');
+const path = require('path');
 const {posix: posixPath} = require('path');
 const headedBrowser = process.env.HEADED_BROWSER === 'true';
 // Two flavors of Playwright:
@@ -303,6 +305,34 @@ const launchOnce = async opts => {
     const playwright = useStealth ? playwrightExtra : playwrightCore;
     // Create a browser of the specified or default type.
     const browserType = playwright[browserID];
+    // Resolve whether to load browser extensions. `report.extensions`, when
+    // present, is an array of absolute paths of directories of unpacked
+    // extensions to be loaded into the browser. Chromium alone can load
+    // extensions, and only into a persistent context, so, when any extensions
+    // are specified, the creation below uses launchPersistentContext with a
+    // temporary profile instead of launch plus newContext.
+    const extensionPaths = Array.isArray(report.extensions) ? report.extensions : [];
+    const useExtensions = extensionPaths.length > 0;
+    // If extensions were specified for a browser type that cannot load them:
+    if (useExtensions && browserID !== 'chromium') {
+      // Return an error, because a test without the specified extensions could mislead.
+      return {
+        success: false,
+        error: `Extensions were specified, but browser type ${browserID} cannot load them (only chromium can)`
+      };
+    }
+    // Identify the first specified extension directory, if any, that has no manifest.
+    const badExtensionPath = extensionPaths.find(
+      extensionPath => ! fs.existsSync(path.join(extensionPath, 'manifest.json'))
+    );
+    // If there is one:
+    if (badExtensionPath) {
+      // Return an error.
+      return {
+        success: false,
+        error: `No unpacked extension (manifest.json) found at ${badExtensionPath}`
+      };
+    }
     // Define the browser-option args, depending on the browser type and head-emulation level.
     const browserOptionArgs = [];
     if (browserID === 'chromium') {
@@ -320,7 +350,6 @@ const launchOnce = async opts => {
           '--disable-software-rasterizer',
           '--force-device-scale-factor=1',
           '--disable-default-apps',
-          '--disable-extensions',
           '--disable-sync',
           '--disable-background-timer-throttling',
           '--disable-backgrounding-occluded-windows',
@@ -334,6 +363,20 @@ const launchOnce = async opts => {
           '--disable-notifications',
           '--disable-popup-blocking'
         );
+      }
+      // If extensions are to be loaded:
+      if (useExtensions) {
+        // Add args that load them and bar all others.
+        const extensionPathList = extensionPaths.join(',');
+        browserOptionArgs.push(
+          `--disable-extensions-except=${extensionPathList}`,
+          `--load-extension=${extensionPathList}`
+        );
+      }
+      // Otherwise, if the head-emulation level is high:
+      else if (headEmulation === 'high') {
+        // Add an arg that bars all extensions.
+        browserOptionArgs.push('--disable-extensions');
       }
     }
     // Get the browser options.
@@ -357,9 +400,7 @@ const launchOnce = async opts => {
     }
     let browser, browserContext;
     try {
-      // Create a browser of the specified type.
-      browser = await browserType.launch(browserOptions);
-      // Create a context (i.e. window) for it.
+      // Define the context (i.e. window) options.
       const contextOptions = {
         ...device.windowOptions,
         userAgent: device.windowOptions.userAgent
@@ -375,7 +416,27 @@ const launchOnce = async opts => {
           'Upgrade-Insecure-Requests': '1'
         }
       };
-      browserContext = await browser.newContext(contextOptions);
+      // If extensions are to be loaded:
+      if (useExtensions) {
+        // If the browser is to be headless:
+        if (browserOptions.headless) {
+          // Use the full Chromium browser in its new headless mode, because
+          // the default headless shell cannot load extensions.
+          browserOptions.channel = 'chromium';
+        }
+        // Create the browser and its context together, with a temporary
+        // profile ('') that Playwright deletes when the context closes.
+        browserContext = await browserType.launchPersistentContext(
+          '', {...browserOptions, ...contextOptions}
+        );
+      }
+      // Otherwise, i.e. if no extensions are to be loaded:
+      else {
+        // Create a browser of the specified type.
+        browser = await browserType.launch(browserOptions);
+        // Create a context (i.e. window) for it.
+        browserContext = await browser.newContext(contextOptions);
+      }
       // Prevent default timeouts.
       browserContext.setDefaultTimeout(0);
       // When a page (i.e. tab) is added to the browser context (i.e. window):
@@ -423,6 +484,12 @@ const launchOnce = async opts => {
           }
         });
       });
+      // If a persistent context was created:
+      if (useExtensions) {
+        // Close its initial blank page, so that the page created below is the
+        // only one, as in a non-persistent context.
+        await Promise.all(browserContext.pages().map(initialPage => initialPage.close()));
+      }
       // Create a page (tab) of the context (window).
       page = await browserContext.newPage();
       // Add a script to the page to mask automation detection.
@@ -670,8 +737,8 @@ exports.launch = async (opts = {}) => {
           error = launchResult.error;
           // Report this.
           console.log(`WARNING: Retry failed (${error})`);
-          // If a browser type was specified, retries are exhausted, and browser types are not:
-          if (tempBrowserID && unusedBrowserIDs.length && ! retriesLeft) {
+          // If a browser type was specified, retries are exhausted, browser types are not, and no extensions were specified (extensions being loadable only into chromium):
+          if (tempBrowserID && unusedBrowserIDs.length && ! retriesLeft && ! report.extensions?.length) {
             // Change the browser type.
             tempBrowserID = unusedBrowserIDs.shift();
             console.log(`NOTICE: Changing job browser type to ${tempBrowserID}`);

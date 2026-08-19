@@ -178,6 +178,7 @@ exports.isValidJob = job => {
       device,
       browserID,
       stealth,
+      extensions,
       creationTimeStamp,
       executionTimeStamp,
       target,
@@ -224,6 +225,26 @@ exports.isValidJob = job => {
         isValid: false,
         error: 'Bad job stealth (must be boolean if present)'
       };
+    }
+    // `extensions` is optional. When present, it must be an array of absolute paths of directories of unpacked browser extensions to be loaded into the browser. Only Chromium can load extensions.
+    if (extensions !== undefined) {
+      if (
+        ! Array.isArray(extensions)
+        || extensions.some(
+          extensionPath => ! extensionPath || typeof extensionPath !== 'string'
+        )
+      ) {
+        return {
+          isValid: false,
+          error: 'Bad job extensions (must be an array of nonempty strings if present)'
+        };
+      }
+      if (extensions.length && browserID !== 'chromium') {
+        return {
+          isValid: false,
+          error: 'Bad job extensions (extensions can be loaded only into chromium)'
+        };
+      }
     }
     if (
       ! (creationTimeStamp && typeof creationTimeStamp === 'string' && dateOf(creationTimeStamp))
